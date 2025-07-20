@@ -117,10 +117,3 @@ paper-insight/
 3. Make your changes
 4. Submit a pull request
 
-## License
-
-This project is licensed under the MIT License.
-
-## Contact
-
-For questions or support, please contact the development team.
