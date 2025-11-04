@@ -116,4 +116,15 @@ paper-insight/
 2. Create a feature branch
 3. Make your changes
 4. Submit a pull request
+ 
+## Local-only / Offline mode
+
+This project supports a local-first mode that avoids AstraDB and LangFlow by using a local LLM runtime (Ollama) and a simple JSON-backed vector store. This is useful when you want to run the project fully offline or avoid cloud dependencies.
+
+Quick notes:
+- See `backend/README_LOCAL.md` for detailed local setup steps (Ollama, Python embedding requirements, and running the backend in local mode).
+- Environment variables: the backend reads `OLLAMA_BASE_URL` and `OLLAMA_MODEL` from `backend/.env` when using local mode.
+- Embeddings are generated using `backend/embedding_generator.py` (requires `sentence-transformers`).
+
+Last updated: 2025-11-04
 
