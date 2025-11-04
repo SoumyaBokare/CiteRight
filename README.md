@@ -5,24 +5,26 @@ A full-stack application that provides intelligent insights for research papers 
 ## Features
 
 - **PDF Upload & Processing**: Upload research papers in PDF format
-- **AI-Powered Analysis**: Get intelligent insights using LangChain and embedding models
+- **AI-Powered Analysis**: Get intelligent insights using local LLM (Ollama) and embedding models
 - **Interactive Chat**: Ask questions about uploaded papers and get relevant answers
-- **Vector Database**: Efficient storage and retrieval using AstraDB
-- **Modern UI**: Clean, responsive React frontend
+- **Local Vector Store**: Efficient storage and retrieval using JSON-based vector database
+- **Modern UI**: Clean, responsive React frontend with typing animations
+- **Fully Offline**: Works completely offline without cloud dependencies
 
 ## Tech Stack
 
 ### Backend
 - **Node.js & Express**: Server framework
-- **Python**: AI processing scripts
-- **LangChain**: AI workflow orchestration
-- **AstraDB**: Vector database for embeddings
-- **PDF Processing**: Extract and process text from research papers
+- **Python**: Embedding generation scripts
+- **Ollama**: Local LLM inference (no cloud dependencies)
+- **Sentence Transformers**: Generate document embeddings
+- **Local JSON Store**: Vector database for embeddings and documents
+- **PDF.js**: Extract and process text from research papers
 
 ### Frontend
 - **React**: Modern UI framework
-- **CSS3**: Responsive styling
-- **Axios**: API communication
+- **CSS3**: Responsive styling with Roboto font
+- **Fetch API**: Communication with backend
 
 ## Project Structure
 
@@ -30,19 +32,19 @@ A full-stack application that provides intelligent insights for research papers 
 paper-insight/
 ├── backend/
 │   ├── server.js              # Main Express server
-│   ├── pdf_processor.py       # PDF text extraction
-│   ├── embedding_generator.py # Generate embeddings
-│   ├── astraDBClient.py      # Database operations
-│   ├── LangflowClient.js     # AI workflow client
-│   ├── package.json          # Node.js dependencies
-│   └── requirements.txt      # Python dependencies
+│   ├── embedding_generator.py # Generate embeddings using sentence-transformers
+│   ├── vector_store.json      # Local JSON-based vector database (created at runtime)
+│   ├── .env.example           # Environment variables template
+│   ├── README_LOCAL.md        # Local setup documentation
+│   ├── package.json           # Node.js dependencies
+│   └── requirements.txt       # Python dependencies
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # React components
+│   │   ├── components/        # React components
 │   │   │   ├── LandingPage.js
 │   │   │   └── ChatRoom.js
-│   │   └── App.js           # Main React app
-│   └── package.json         # Frontend dependencies
+│   │   └── App.js            # Main React app
+│   └── package.json          # Frontend dependencies
 └── README.md
 ```
 
@@ -51,8 +53,7 @@ paper-insight/
 ### Prerequisites
 - Node.js (v14 or higher)
 - Python (v3.8 or higher)
-- AstraDB account
-- LangFlow setup
+- Ollama installed and running locally ([Download Ollama](https://ollama.ai))
 
 ### Backend Setup
 
@@ -68,17 +69,29 @@ paper-insight/
 
 3. Install Python dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install sentence-transformers torch
    ```
 
 4. Set up environment variables:
-   - Create a `.env` file with your AstraDB credentials
-   - Add LangFlow configuration
+   - Copy `.env.example` to `.env`
+   - Configure Ollama settings:
+     ```
+     OLLAMA_BASE_URL=http://localhost:11434
+     OLLAMA_MODEL=llama3.1:8b
+     PORT=3001
+     ```
 
-5. Start the backend server:
+5. Ensure Ollama is running and has the model:
+   ```bash
+   ollama pull llama3.1:8b
+   ```
+
+6. Start the backend server:
    ```bash
    npm start
    ```
+
+For detailed local setup instructions, see `backend/README_LOCAL.md`.
 
 ### Frontend Setup
 
@@ -106,9 +119,8 @@ paper-insight/
 
 ## API Endpoints
 
-- `POST /upload` - Upload PDF files
-- `POST /chat` - Send chat messages and get responses
-- `GET /papers` - Retrieve uploaded papers list
+- `POST /api/upload` - Upload PDF files and generate embeddings
+- `POST /api/chat` - Send chat messages with documentId and get AI-powered responses
 
 ## Contributing
 
