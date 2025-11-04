@@ -68,14 +68,22 @@ const UploadScreen = ({ onFileUpload }) => {
       .then((data) => {
         if (data.success) {
           console.log("File uploaded successfully", data);
-          // Call the callback with the uploaded file data (e.g., paper details)
-          onFileUpload(file);
+          // Store both file and documentId
+          const fileWithId = {
+            ...file,
+            documentId: data.documentId,
+            name: file.name
+          };
+          // Call the callback with the uploaded file data including documentId
+          onFileUpload(fileWithId);
         } else {
           console.error("File upload failed", data.error);
+          alert("Failed to upload file: " + (data.error || "Unknown error"));
         }
       })
       .catch((error) => {
         console.error("Error uploading file", error);
+        alert("Error uploading file. Please try again.");
       });
   }
 
@@ -132,6 +140,26 @@ const Message = ({ message, isUser }) => {
   )
 }
 
+// Typing Indicator Component
+const TypingIndicator = () => {
+  return createElement(
+    "div",
+    { className: "message bot-message" },
+    createElement("div", { className: "message-avatar" }, "🤖"),
+    createElement(
+      "div",
+      { className: "message-content" },
+      createElement(
+        "div",
+        { className: "typing-indicator" },
+        createElement("span", { className: "dot" }),
+        createElement("span", { className: "dot" }),
+        createElement("span", { className: "dot" }),
+      ),
+    ),
+  )
+}
+
 // Format timestamp to readable time
 const formatTime = (timestamp) => {
   const date = new Date(timestamp)
@@ -160,6 +188,7 @@ const ChatInterface = () => {
   const [chatSummaries, setChatSummaries] = useState([{ id: 1, title: "New Chat" }])
   const [activeChatId, setActiveChatId] = useState(1)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [isTyping, setIsTyping] = useState(false)
   const messagesEndRef = useRef(null)
 
   const navigate = useNavigate() // Use useNavigate for navigation
@@ -211,29 +240,45 @@ const ChatInterface = () => {
     }
 
     setMessages([...messages, userMessage])
+    const currentInput = inputValue
     setInputValue("")
+    
+    // Show typing indicator
+    setIsTyping(true)
 
-    // Simulate bot response after a delay
-    setTimeout(() => {
-      const botResponses = [
-        "Based on the paper, the main finding is that neural networks can effectively predict climate patterns with 87% accuracy when trained on historical data.",
-        "The methodology section describes a mixed-methods approach combining quantitative surveys with qualitative interviews from 150 participants.",
-        "The authors conclude that further research is needed, but their initial results suggest a strong correlation between the variables.",
-        "According to the literature review, three previous studies found similar results, though this paper uses a larger sample size.",
-        "The limitations mentioned include potential sampling bias and the need for longitudinal studies to confirm the findings.",
-      ]
-
-      const randomResponse = botResponses[Math.floor(Math.random() * botResponses.length)]
-
-      const botMessage = {
-        id: Date.now(),
-        text: randomResponse,
-        isUser: false,
-        timestamp: Date.now(),
-      }
-
-      setMessages((prevMessages) => [...prevMessages, botMessage])
-    }, 1000)
+    // Call backend API to get response from Ollama
+    fetch("http://localhost:3001/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        input: currentInput,
+        documentId: currentPaper?.documentId, // Use the documentId from upload response
+      }),
+    })
+      .then((response) => response.json())
+      .then((data) => {
+        setIsTyping(false)
+        const botMessage = {
+          id: Date.now(),
+          text: data.message || "Sorry, I couldn't generate a response.",
+          isUser: false,
+          timestamp: Date.now(),
+        }
+        setMessages((prevMessages) => [...prevMessages, botMessage])
+      })
+      .catch((error) => {
+        console.error("Error getting response:", error)
+        setIsTyping(false)
+        const errorMessage = {
+          id: Date.now(),
+          text: "Sorry, there was an error getting a response. Please try again.",
+          isUser: false,
+          timestamp: Date.now(),
+        }
+        setMessages((prevMessages) => [...prevMessages, errorMessage])
+      })
   }
 
   // Handle key press (Enter to send)
@@ -329,6 +374,7 @@ const ChatInterface = () => {
                 isUser: message.isUser,
               }),
             ),
+            isTyping && createElement(TypingIndicator, { key: "typing" }),
             createElement("div", { ref: messagesEndRef }),
           ),
 

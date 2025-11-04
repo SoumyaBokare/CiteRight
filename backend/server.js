@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-import { createClient } from '@astrajs/rest';
 import express from "express";
 import bodyParser from "body-parser";
 import multer from "multer";
@@ -10,67 +9,87 @@ import { exec } from "child_process";
 import { fileURLToPath } from "url";
 import pkg from "pdfjs-dist";
 import { v4 as uuidv4 } from 'uuid';
+
 const { getDocument } = pkg;
 
-// Load environment variables from .env
+// Load environment variables
 dotenv.config();
 
-// Define __dirname equivalent for ES modules
+// Define __dirname for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load credentials from .env
-const ASTRA_DB_ID = process.env.ASTRA_DB_ID;
-const ASTRA_DB_REGION = process.env.ASTRA_DB_REGION;
-const ASTRA_DB_APPLICATION_TOKEN = process.env.ASTRA_DB_APPLICATION_TOKEN;
-const KEYSPACE_NAME = process.env.KEYSPACE_NAME || "default_keyspace";
-
-// Define the baseUrl globally so it is accessible everywhere in the code
-const baseUrl = `https://${ASTRA_DB_ID}-${ASTRA_DB_REGION}.apps.astra.datastax.com/api/rest/v2`;
+// Configuration
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama2';
+const CHROMA_PATH = process.env.CHROMA_PATH || './chroma_db';
+const PORT = process.env.PORT || 3001;
 
 const app = express();
-const port = process.env.PORT || 3001;
 
-// Middleware setup
+// Middleware
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(cors());
 
-// Create uploads directory if it doesn't exist
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`📨 ${req.method} ${req.path}`);
+  next();
+});
+
+// Create uploads directory
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Initialize the multer upload middleware
+// Initialize multer
 const upload = multer({ dest: uploadsDir });
 
-// Initialize AstraDB client
-let astraClient;
-
-async function initializeAstraDB() {
-  try {
-    astraClient = await createClient({
-      astraDatabaseId: ASTRA_DB_ID,
-      astraDatabaseRegion: ASTRA_DB_REGION,
-      applicationToken: ASTRA_DB_APPLICATION_TOKEN,
-    });
-    
-    console.log("✅ AstraDB connected successfully");
-  } catch (error) {
-    console.error("❌ AstraDB Connection Error:", error);
-    process.exit(1);
-  }
-}
-
-// Route for checking the status of the server
-app.get("/", (req, res) => {
-  fs.readdir(uploadsDir, (err, files) => {
-    if (err) {
-      return res.status(500).send("Unable to scan uploads directory");
+// Simple in-memory vector store (replaces ChromaDB for simplicity)
+const vectorStore = {
+  documents: new Map(), // documentId -> { text, metadata, embeddings }
+  
+  async add(id, text, metadata, embeddings) {
+    this.documents.set(id, { text, metadata, embeddings });
+    // Persist to disk for durability
+    await this.save();
+  },
+  
+  async get(id) {
+    return this.documents.get(id);
+  },
+  
+  async getAll() {
+    return Array.from(this.documents.entries()).map(([id, data]) => ({
+      id,
+      ...data
+    }));
+  },
+  
+  async save() {
+    const dataPath = path.join(__dirname, 'vector_store.json');
+    const data = Array.from(this.documents.entries());
+    await fs.promises.writeFile(dataPath, JSON.stringify(data, null, 2));
+  },
+  
+  async load() {
+    try {
+      const dataPath = path.join(__dirname, 'vector_store.json');
+      const content = await fs.promises.readFile(dataPath, 'utf8');
+      const data = JSON.parse(content);
+      this.documents = new Map(data);
+      console.log(`✅ Loaded ${this.documents.size} documents from vector store`);
+    } catch (error) {
+      console.log('ℹ️ No existing vector store found, starting fresh');
     }
-    res.send(`📄 Research Paper Chatbot Backend is Running!<br>Files in uploads folder:<br>${files.join("<br>")}`);
-  });
-});
+  }
+};
+
+async function initializeVectorStore() {
+  await vectorStore.load();
+  console.log('✅ Vector store initialized');
+}
 
 // Extract text from PDF using pdfjs-dist
 async function extractTextWithPdfjs(filePath) {
@@ -82,7 +101,6 @@ async function extractTextWithPdfjs(filePath) {
     }).promise;
 
     let fullText = "";
-
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
@@ -97,12 +115,85 @@ async function extractTextWithPdfjs(filePath) {
   }
 }
 
-// Helper function to format UUID for AstraDB
-function formatUuid(uuid) {
-  return uuid.replace(/-/g, '');
+// Generate embeddings using Python script
+function generateEmbeddings(textFilePath) {
+  return new Promise((resolve, reject) => {
+    const pythonScript = process.env.EMBEDDING_SCRIPT_PATH || path.join(__dirname, 'embedding_generator.py');
+    
+    exec(`python "${pythonScript}" "${textFilePath}"`, (err, stdout, stderr) => {
+      if (err) {
+        console.error(`❌ Error generating embeddings:\n${stderr}`);
+        reject(new Error("Failed to generate embeddings"));
+        return;
+      }
+
+      try {
+        const embeddings = JSON.parse(stdout);
+        resolve(embeddings);
+      } catch (parseErr) {
+        console.error("❌ Failed to parse embeddings JSON:", parseErr);
+        reject(new Error("Invalid embeddings format"));
+      }
+    });
+  });
 }
 
-// Route for uploading PDF papers
+// Call Ollama API for chat completion
+async function callOllama(prompt) {
+  try {
+    console.log(`🔄 Calling Ollama API at ${OLLAMA_BASE_URL}/api/generate`);
+    console.log(`📝 Using model: ${OLLAMA_MODEL}`);
+    console.log(`📄 Prompt length: ${prompt.length} characters`);
+    
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt: prompt,
+        stream: false,
+        options: {
+          num_predict: 2048,  // Increased max tokens from default (~512) to 2048
+          temperature: 0.7,    // Balanced creativity
+          top_p: 0.9,          // Nucleus sampling for quality
+          top_k: 40            // Limit vocabulary for coherence
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ Ollama API returned error status ${response.status}:`, errorText);
+      throw new Error(`Ollama API error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    console.log(`✅ Ollama responded with ${result.response?.length || 0} characters`);
+    
+    if (!result.response) {
+      console.error('❌ Ollama returned no response:', result);
+      return "Error: Ollama did not generate a response. Please try again.";
+    }
+    
+    return result.response;
+  } catch (error) {
+    console.error('❌ Ollama API error:', error);
+    console.error('Error details:', error.message);
+    throw error;
+  }
+}
+
+// Root route
+app.get("/", (req, res) => {
+  fs.readdir(uploadsDir, (err, files) => {
+    if (err) {
+      return res.status(500).send("Unable to scan uploads directory");
+    }
+    res.send(`📄 Research Paper Chatbot Backend (Ollama + ChromaDB) is Running!<br>Files in uploads folder:<br>${files.join("<br>")}`);
+  });
+});
+
+// Upload PDF route
 app.post("/api/upload", upload.single("paper"), async (req, res) => {
   try {
     if (!req.file) {
@@ -114,212 +205,154 @@ app.post("/api/upload", upload.single("paper"), async (req, res) => {
 
     console.log(`📄 Processing file: ${fileName}`);
 
-    // Extract text from the uploaded PDF
+    // Extract text from PDF
     const extractedText = await extractTextWithPdfjs(filePath);
-
+    
+    // Save text to temp file for embedding generation
     const tempTextFilePath = path.join(uploadsDir, `${fileName}.txt`);
     fs.writeFileSync(tempTextFilePath, extractedText);
 
-    // Use absolute path for the Python embedding script
-    const pythonEmbeddingScriptPath = "C:/Users/soumy/OneDrive/Desktop/TY/MPL/paper-insight/backend/embedding_generator.py";
+    console.log(`Generating embeddings...`);
+    
+    // Generate embeddings
+    const embeddings = await generateEmbeddings(tempTextFilePath);
+    
+    console.log(`✅ Embeddings generated successfully`);
 
-    console.log(`Embedding script path: ${pythonEmbeddingScriptPath}`);
+    // Generate document ID
+    const documentId = uuidv4().replace(/-/g, '');
 
-    exec(`python "${pythonEmbeddingScriptPath}" "${tempTextFilePath}"`, async (err, stdout, stderr) => {
-      if (err) {
-        console.error(`❌ Error generating embeddings:\n${stderr}`);
-        return res.status(500).json({ error: "Failed to generate embeddings" });
-      }
+    // Store in vector store
+    await vectorStore.add(documentId, extractedText, {
+      fileName: fileName,
+      title: fileName,
+      upload_date: new Date().toISOString()
+    }, embeddings);
 
-      let embeddings;
-      try {
-        embeddings = JSON.parse(stdout);
-      } catch (parseErr) {
-        console.error("❌ Failed to parse embeddings JSON:", parseErr);
-        console.error("Raw stdout:", stdout);
-        return res.status(500).json({ error: "Invalid embeddings format" });
-      }
+    console.log(`✅ Document stored with ID: ${documentId}`);
 
-      console.log(`✅ Embeddings generated successfully`);
-
-      // Generate a UUID for the document
-      const documentUuid = formatUuid(uuidv4());
-      const timestamp = new Date().toISOString();
-
-      // Prepare metadata for pdf_metadata table
-      const metadata = {
-        pdf_id: documentUuid,
-        fileName: fileName,
-        title: fileName,
-        author: "Unknown",
-        upload_date: timestamp,
-        text: extractedText
-      };
-
-      // Prepare vector data for pdf_vectors table
-      const vectorData = {
-        pdf_id: documentUuid,
-        vector_id: `${fileName.replace(/\s+/g, '_')}_v1`,
-        vector: embeddings
-      };
-
-      try {
-        // Store metadata in AstraDB
-        console.log(`Storing metadata for document: ${fileName}`);
-        
-        // Use keyspaces for tables (not namespaces/collections)
-        const metadataEndpoint = `keyspaces/${KEYSPACE_NAME}/tables/pdf_metadata/rows`;
-        console.log(`Using endpoint: ${metadataEndpoint}`);
-        
-        const metadataResponse = await astraClient.post(
-          `${baseUrl}/${metadataEndpoint}`,
-          { rows: [{ columns: metadata }] }
-        );
-        
-        console.log(`✅ Document metadata stored in AstraDB with ID: ${documentUuid}`);
-        
-        // Store vector data in AstraDB
-        console.log(`Storing vector data for document: ${fileName}`);
-        
-        const vectorEndpoint = `keyspaces/${KEYSPACE_NAME}/tables/pdf_vectors/rows`;
-        console.log(`Using endpoint: ${vectorEndpoint}`);
-        
-        const vectorResponse = await astraClient.post(
-          `${baseUrl}/${vectorEndpoint}`,
-          { rows: [{ columns: vectorData }] }
-        );
-        
-        console.log(`✅ Document vectors stored in AstraDB with ID: ${documentUuid}`);
-        
-        // Keep files for debugging if needed
-        // fs.unlinkSync(filePath);
-        // fs.unlinkSync(tempTextFilePath);
-        
-        res.json({
-          success: true,
-          message: "Paper uploaded and processed successfully",
-          documentId: documentUuid
-        });
-      } catch (storeErr) {
-        console.error("❌ Error storing document in Astra DB:", storeErr);
-        
-        // Try to get more detailed error information
-        if (storeErr.response) {
-          console.error("Response data:", storeErr.response.data);
-          console.error("Response status:", storeErr.response.status);
-        }
-        
-        res.status(500).json({ 
-          error: "Failed to store document in Astra DB", 
-          details: storeErr.message 
-        });
-      }
+    res.json({
+      success: true,
+      message: "Paper uploaded and processed successfully",
+      documentId: documentId
     });
+
   } catch (error) {
     console.error("❌ Error uploading research paper:", error);
-    res.status(500).json({ error: "Failed to process the research paper", details: error.message });
+    res.status(500).json({ 
+      error: "Failed to process the research paper", 
+      details: error.message 
+    });
   }
 });
 
-// Route for handling chatbot queries
+// Chat route - RAG with Ollama
 app.post("/api/chat", async (req, res) => {
-  const { input, documentId } = req.body;
-  
-  if (!input || !documentId) {
-    return res.status(400).json({ error: "Missing required fields: input and documentId" });
-  }
-  
-  console.log(`💬 User Query: ${input}`);
-
   try {
-    // Get document metadata from Astra DB
-    const metadataEndpoint = `keyspaces/${KEYSPACE_NAME}/tables/pdf_metadata/${documentId}`;
-    console.log(`Getting document metadata from: ${metadataEndpoint}`);
-    
-    const metadataResponse = await astraClient.get(metadataEndpoint);
-    const metadata = metadataResponse.data;
+    const { input, documentId } = req.body;
 
-    if (!metadata) {
+    if (!input || !documentId) {
+      return res.status(400).json({ 
+        error: "Missing required fields: input and documentId" 
+      });
+    }
+
+    console.log(`💬 User Query: ${input}`);
+
+    // Retrieve document from vector store
+    const docData = await vectorStore.get(documentId);
+
+    if (!docData) {
       return res.status(404).json({ error: "Document not found" });
     }
 
-    const context = metadata.text;
+    const documentText = docData.text;
+    const metadata = docData.metadata;
 
-    // Call Langflow API for processing the user query
-    const response = await runLangflow(input, context);
+    console.log(`📖 Retrieved document: ${metadata.fileName}`);
+    console.log(`📏 Document text length: ${documentText?.length || 0} characters`);
+    console.log(`📄 First 200 chars of document: ${documentText?.slice(0, 200) || 'NO TEXT FOUND'}...`);
 
-    if (response) {
-      console.log(`🤖 Bot Response: ${response}`);
-      res.json({ message: response });
-    } else {
-      res.status(500).json({ error: "Failed to get response from chatbot" });
-    }
-  } catch (error) {
-    console.error("❌ Error communicating with chatbot:", error);
-    res.status(500).json({ error: "Failed to get response", details: error.message });
-  }
-});
+    // Increase context length for more detailed answers (llama3.1:8b supports ~8k tokens)
+    const MAX_CONTEXT_LENGTH = 12000; // Increased from 4000 to 12000
+    const context = documentText.length > MAX_CONTEXT_LENGTH 
+      ? documentText.slice(0, MAX_CONTEXT_LENGTH) + "..."
+      : documentText;
 
-// Function to communicate with Langflow API
-async function runLangflow(question, context) {
-  try {
-    const response = await fetch(`${process.env.LANGFLOW_API_URL}/run`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.LANGFLOW_API_TOKEN || process.env.ASTRA_DB_APPLICATION_TOKEN}`,
-      },
-      body: JSON.stringify({
-        flow_id: process.env.FLOW_ID,
-        inputs: { question, context },
-      }),
+    console.log(`📋 Context length being sent to Ollama: ${context.length} characters`);
+
+    // Build RAG prompt with instructions for detailed responses
+    const prompt = `You are an expert research assistant with deep knowledge of academic papers. Your task is to provide comprehensive, detailed, and well-structured answers based ONLY on the research paper content provided below.
+
+INSTRUCTIONS:
+- Provide thorough, detailed explanations (minimum 3-4 paragraphs)
+- Break down complex concepts into clear sections
+- Include specific examples, data, or findings from the paper
+- Cite relevant sections or page references when possible
+- Use bullet points or numbered lists for clarity when appropriate
+- If multiple aspects exist, cover all of them comprehensively
+- Only say "I cannot find this information" if the paper truly doesn't contain relevant content
+
+RESEARCH PAPER CONTENT:
+${context}
+
+USER QUESTION: ${input}
+
+DETAILED ANSWER (provide a comprehensive response):`;
+
+    console.log(`🤖 Calling Ollama with model: ${OLLAMA_MODEL}`);
+
+    // Call Ollama
+    const answer = await callOllama(prompt);
+
+    console.log(`✅ Response generated`);
+
+    res.json({ 
+      message: answer,
+      metadata: {
+        documentName: metadata.fileName,
+        model: OLLAMA_MODEL
+      }
     });
 
-    if (!response.ok) {
-      const errorData = await response.text();
-      throw new Error(`Langflow API error (${response.status}): ${errorData}`);
-    }
-
-    const result = await response.json();
-    return result.message || "Error generating response";
   } catch (error) {
-    console.error("❌ Langflow API Error:", error);
-    return "Failed to generate response";
-  }
-}
-
-// List available PDFs route
-app.get("/api/papers", async (req, res) => {
-  try {
-    const endpoint = `keyspaces/${KEYSPACE_NAME}/tables/pdf_metadata`;
-
-    console.log(`Getting paper list from: ${endpoint}`);
-    
-    const response = await astraClient.get(`${baseUrl}/${endpoint}`);
-    
-    if (!response.data || !response.data.data) {
-      return res.json({ papers: [] });
-    }
-    
-    // Extract relevant information for frontend
-    const papers = response.data.data.map(paper => ({
-      id: paper.pdf_id,
-      name: paper.fileName || paper.title
-    }));
-    
-    res.json({ papers });
-  } catch (error) {
-    console.error("❌ Error retrieving paper list:", error);
-    res.status(500).json({ error: "Failed to retrieve paper list", details: error.message });
+    console.error("❌ Error in chat:", error);
+    res.status(500).json({ 
+      error: "Failed to generate response", 
+      details: error.message 
+    });
   }
 });
 
-// Initialize AstraDB connection and start the server
-initializeAstraDB().then(() => {
-  app.listen(port, () => {
-    console.log(`🚀 Server running at http://localhost:${port}`);
+// List papers route
+app.get("/api/papers", async (req, res) => {
+  try {
+    // Get all documents from vector store
+    const allDocs = await vectorStore.getAll();
+
+    const papers = allDocs.map(doc => ({
+      id: doc.id,
+      name: doc.metadata.fileName || doc.metadata.title || 'Unknown'
+    }));
+
+    res.json({ papers });
+  } catch (error) {
+    console.error("❌ Error retrieving papers:", error);
+    res.status(500).json({ 
+      error: "Failed to retrieve papers", 
+      details: error.message 
+    });
+  }
+});
+
+// Start server
+initializeVectorStore().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    console.log(`📦 Using Ollama model: ${OLLAMA_MODEL}`);
+    console.log(`💾 Vector store: local JSON file`);
   });
 }).catch(err => {
-  console.error("Failed to start server:", err);
+  console.error("Failed to initialize server:", err);
   process.exit(1);
 });

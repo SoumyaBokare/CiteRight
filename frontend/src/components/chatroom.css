@@ -1,5 +1,6 @@
 /* ChatInterface.css */
 @import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400..900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap");
 
 :root {
   --bg-primary: #0a0a0a;
@@ -244,6 +245,8 @@
 .message-text {
   font-size: 0.95rem;
   line-height: 1.5;
+  font-family: 'Roboto', sans-serif;
+  font-weight: 400;
 }
 
 .message-time {
@@ -251,6 +254,7 @@
   color: var(--text-secondary);
   margin-top: 5px;
   text-align: right;
+  font-family: 'Roboto', sans-serif;
 }
 
 .chat-input-container {
@@ -459,3 +463,43 @@
   }
 }
 
+/* Typing Indicator Animation */
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+  background: var(--bot-message-bg);
+  border-radius: 12px;
+}
+
+.typing-indicator .dot {
+  width: 8px;
+  height: 8px;
+  background-color: var(--accent-secondary);
+  border-radius: 50%;
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+
+.typing-indicator .dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.typing-indicator .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.typing-indicator .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.7;
+  }
+  30% {
+    transform: translateY(-10px);
+    opacity: 1;
+  }
+}
